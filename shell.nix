@@ -8,6 +8,7 @@ pkgs.mkShell {
 
     rust-analyzer
     rustfmt
+	clippy
 
     pkg-config
     openssl

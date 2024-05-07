@@ -1,31 +1,39 @@
-mod wayland_app;
+// mod wayland_app;
+// mod wayland_data;
+// use std::time::Duration;
+// use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
+// use wayland_client::globals::{BindError, GlobalList, registry_queue_init};
+// use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_manager_v1;
+//
+// use smithay_client_toolkit::activation::{ActivationState, RequestData};
+// use smithay_client_toolkit::{delegate_output, delegate_registry, output::{OutputState}, registry::{RegistryState}, compositor::{CompositorState}, delegate_compositor, delegate_shm, delegate_keyboard, delegate_seat, delegate_xdg_shell, delegate_xdg_window, delegate_activation, delegate_pointer};
+// use smithay_client_toolkit::globals::GlobalData;
+// use smithay_client_toolkit::reexports::calloop::{EventLoop};
+// use smithay_client_toolkit::reexports::csd_frame::{WindowManagerCapabilities, WindowState};
+// use smithay_client_toolkit::reexports::protocols::xdg::activation::v1::client::xdg_activation_v1;
+// use smithay_client_toolkit::seat::{SeatState};
+// use smithay_client_toolkit::shell::WaylandSurface;
+// use smithay_client_toolkit::shell::xdg::window::{DecorationMode, WindowConfigure, WindowDecorations, WindowHandler};
+// use smithay_client_toolkit::shell::xdg::{XdgShell, XdgSurface};
+// use smithay_client_toolkit::shm::{Shm};
+// use smithay_client_toolkit::shm::slot::{SlotPool};
+// use wayland_client::protocol::wl_buffer::WlBuffer;
+// use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_manager_v1;
+// use std::num::NonZeroU32;
+// use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_manager_v1;
+// use crate::wayland_app::{App, ScreenCopyManager};
+mod test;
 mod wayland_data;
+mod wayland_screencopy;
+mod wayland_fractional_scale;
 
-use std::num::NonZeroU32;
-use std::time::Duration;
-use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
-use wayland_client::globals::{BindError, GlobalList, registry_queue_init};
-// use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_manager_v1;
+use crate::test::test;
 
-use smithay_client_toolkit::activation::{ActivationState, RequestData};
-use smithay_client_toolkit::{delegate_output, delegate_registry, output::{OutputState}, registry::{RegistryState}, compositor::{CompositorState}, delegate_compositor, delegate_shm, delegate_keyboard, delegate_seat, delegate_xdg_shell, delegate_xdg_window, delegate_activation, delegate_pointer};
-use smithay_client_toolkit::globals::GlobalData;
-use smithay_client_toolkit::reexports::calloop::{EventLoop};
-use smithay_client_toolkit::reexports::csd_frame::{WindowManagerCapabilities, WindowState};
-use smithay_client_toolkit::reexports::protocols::xdg::activation::v1::client::xdg_activation_v1;
-use smithay_client_toolkit::seat::{SeatState};
-use smithay_client_toolkit::shell::WaylandSurface;
-use smithay_client_toolkit::shell::xdg::window::{DecorationMode, WindowConfigure, WindowDecorations, WindowHandler};
-use smithay_client_toolkit::shell::xdg::{XdgShell, XdgSurface};
-use smithay_client_toolkit::shm::{Shm};
-use smithay_client_toolkit::shm::slot::{SlotPool};
-use wayland_client::protocol::wl_buffer::WlBuffer;
-use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_manager_v1;
-// use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_manager_v1;
-use crate::wayland_app::{App, ScreenCopyManager};
 
 
 fn main() {
+    test();
+    /*
     delegate_compositor!(App);
     delegate_output!(App);
     delegate_shm!(App);
@@ -122,4 +130,6 @@ fn main() {
             break;
         }
     }
+
+     */
 }

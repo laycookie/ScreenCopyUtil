@@ -8,6 +8,8 @@ edition = "2021"
 [dependencies]
 smithay-client-toolkit = "0.18.1"
 #iced = "0.12.1"
- wayland-client = "0.31.2"
+wayland-client = "0.31.2"
+wayland-protocols = "0.31.2"
 wayland-protocols-wlr = { version =  "0.2.0", features = ["client"]}
 image = "0.25.0"
+
