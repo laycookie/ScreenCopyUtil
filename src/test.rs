@@ -1,19 +1,21 @@
-use smithay_client_toolkit::compositor::CompositorState;
-use smithay_client_toolkit::{delegate_compositor, delegate_output, delegate_registry, delegate_shm, delegate_xdg_shell, delegate_xdg_window};
-use smithay_client_toolkit::globals::GlobalData;
-use smithay_client_toolkit::output::{OutputHandler, OutputInfo, OutputState};
-use smithay_client_toolkit::reexports::protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1;
-use smithay_client_toolkit::registry::RegistryState;
-use smithay_client_toolkit::shell::xdg::window::WindowDecorations;
-use smithay_client_toolkit::shell::xdg::XdgShell;
-use smithay_client_toolkit::shm::Shm;
-use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
-use wayland_client::{Connection, QueueHandle};
-use wayland_client::globals::registry_queue_init;
-use wayland_client::protocol::wl_shm::Format;
 use crate::wayland_data::{ScreenShotViewer, WindowState};
 use crate::wayland_fractional_scale::FractionalScale;
 use crate::wayland_screencopy::ScreenCopyManager;
+use smithay_client_toolkit::compositor::CompositorState;
+use smithay_client_toolkit::globals::GlobalData;
+use smithay_client_toolkit::output::OutputState;
+use smithay_client_toolkit::registry::RegistryState;
+use smithay_client_toolkit::shell::xdg::window::WindowDecorations;
+use smithay_client_toolkit::shell::xdg::XdgShell;
+use smithay_client_toolkit::shm::slot::SlotPool;
+use smithay_client_toolkit::shm::Shm;
+use smithay_client_toolkit::{
+    delegate_compositor, delegate_output, delegate_registry, delegate_shm, delegate_xdg_shell,
+    delegate_xdg_window,
+};
+use wayland_client::globals::registry_queue_init;
+use wayland_client::protocol::wl_shm::Format;
+use wayland_client::{Connection, QueueHandle};
 
 pub fn test() {
     delegate_compositor!(WindowState);
@@ -55,7 +57,7 @@ pub fn test() {
     event_queue.roundtrip(&mut window_state).unwrap();
 
     // Init a window per monitor
-    for screen in window_state.output_state.outputs() {
+    for (i, screen) in window_state.output_state.outputs().enumerate() {
         let (width, height) = match window_state.output_state.info(&screen) {
             None => {
                 continue;
@@ -71,6 +73,7 @@ pub fn test() {
         let screenshot = window_state
             .zwlr_screencopy_manager
             .capture_output(0, &screen, &qh, GlobalData);
+
         screenshot.copy(buffer.wl_buffer());
 
         let surface = window_state.compositor_state.create_surface(&qh);
@@ -80,6 +83,7 @@ pub fn test() {
                 .create_window(surface, WindowDecorations::RequestServer, &qh);
         window_state.windows.push(ScreenShotViewer {
             window,
+            screen: i,
             screenshot_buffer: buffer,
             width: width as u32,
             height: height as u32,
