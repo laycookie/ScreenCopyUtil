@@ -13,3 +13,5 @@ wayland-protocols = "0.31.2"
 wayland-protocols-wlr = { version =  "0.2.0", features = ["client"]}
 image = "0.25.0"
 tempfile = "3.10.1"
+memmap = "0.7.0"
+dirs = "5.0.1"

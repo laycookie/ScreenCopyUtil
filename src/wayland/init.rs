@@ -12,7 +12,6 @@ use wayland_client::{
         wl_buffer::WlBuffer,
         wl_callback::WlCallback,
         wl_compositor::WlCompositor,
-        wl_output::WlOutput,
         wl_registry::{self, WlRegistry},
         wl_shell_surface::WlShellSurface,
         wl_shm::{Format, WlShm},
@@ -86,32 +85,33 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for Delegate {
         }
     }
 }
-impl Dispatch<ZwlrScreencopyFrameV1, Arc<Mutex<Executed>>> for Delegate {
+impl Dispatch<ZwlrScreencopyFrameV1, Arc<Mutex<u8>>> for Delegate {
     fn event(
         _: &mut Self,
         _: &ZwlrScreencopyFrameV1,
         event: <ZwlrScreencopyFrameV1 as wayland_client::Proxy>::Event,
-        printa: &Arc<Mutex<Executed>>,
+        screencopying_counter: &Arc<Mutex<u8>>,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
         if let zwlr_screencopy_frame_v1::Event::Ready { .. } = event {
-            printa.lock().unwrap().process_finished();
+            *screencopying_counter.lock().unwrap() -= 1;
         }
     }
 }
 
-struct WaylandWindowData {
-    ressolution: (i32, i32),
-    offset: i32,
-    buffer: WlBuffer,
-    surface: WlSurface,
-    output: WlOutput,
-}
 struct WindowDataManager<'a> {
     file: File,
     qh: &'a QueueHandle<Delegate>,
-    wayland_window_data: Vec<WaylandWindowData>,
+    wayland_window_data: Vec<PopupData>,
+}
+
+#[derive(Debug)]
+struct PopupData {
+    screen_data: ScreenData,
+    _offset: i32,
+    buffer: WlBuffer,
+    surface: WlSurface,
 }
 
 impl WindowDataManager<'_> {
@@ -124,13 +124,16 @@ impl WindowDataManager<'_> {
 
     fn _draw(&mut self, monitor: usize) {
         let monitor_data = &self.wayland_window_data[monitor];
-        let (buf_x, buf_y) = (monitor_data.ressolution.0, monitor_data.ressolution.1);
+        let (buf_x, buf_y) = (
+            monitor_data.screen_data.resolution.0,
+            monitor_data.screen_data.resolution.1,
+        );
         let tmp = &mut self.file;
 
         use std::{cmp::min, io::Write};
         let mut buf = std::io::BufWriter::new(tmp);
 
-        buf.seek(SeekFrom::Start(monitor_data.offset as u64))
+        buf.seek(SeekFrom::Start(monitor_data._offset as u64))
             .unwrap();
 
         for y in 0..buf_y {
@@ -147,56 +150,36 @@ impl WindowDataManager<'_> {
     }
 
     /// Returns a bool when the screen has been copied into the buffer.
-    fn screencopy(&self, screencopy_manager: &ZwlrScreencopyManagerV1) -> Arc<Mutex<Executed>> {
-        // let compleated = Box::new(false);
+    fn screencopy(&self, screencopy_manager: &ZwlrScreencopyManagerV1) -> Arc<Mutex<u8>> {
+        let screencopying_counter = Arc::new(Mutex::new(0u8));
 
-        let c = Arc::new(Mutex::new(Executed::new()));
-
-        // let mut abc: Vec<Arc<Mutex<bool>>> = vec![];
         for win_data in &self.wayland_window_data {
-            c.lock().unwrap().add_process();
+            *screencopying_counter.lock().unwrap() += 1;
 
-            let a = screencopy_manager.capture_output(0, &win_data.output, self.qh, c.clone());
+            let a = screencopy_manager.capture_output(
+                0,
+                &win_data.screen_data.wl_output,
+                self.qh,
+                screencopying_counter.clone(),
+            );
             a.copy(&win_data.buffer);
         }
 
-        c
+        screencopying_counter
     }
 }
 
-struct Executed {
-    process: u8,
-}
-impl Executed {
-    fn new() -> Executed {
-        Executed { process: 0 }
-    }
-    fn add_process(&mut self) {
-        self.process += 1;
-    }
-    fn process_finished(&mut self) {
-        self.process -= 1;
-        println!("{}", self.process);
-    }
-    fn is_finished(&self) -> bool {
-        self.process == 0
-    }
-}
-
+delegate_noop!(Delegate: ignore WlCompositor);
+delegate_noop!(Delegate: ignore WlBuffer);
+delegate_noop!(Delegate: ignore WlSurface);
+delegate_noop!(Delegate: ignore WlShm);
+delegate_noop!(Delegate: ignore WlShmPool);
+delegate_noop!(Delegate: ignore WlShellSurface);
+delegate_noop!(Delegate: ignore ZwlrLayerShellV1);
+delegate_noop!(Delegate: ignore ZwlrScreencopyManagerV1);
+delegate_noop!(Delegate: ignore WpViewporter);
+delegate_noop!(Delegate: ignore WpViewport);
 pub(crate) fn screen_shot_overlay(wayland: &mut WaylandVars, screens: Vec<ScreenData>) {
-    delegate_noop!(Delegate: ignore WlCompositor);
-    delegate_noop!(Delegate: ignore WlBuffer);
-    delegate_noop!(Delegate: ignore WlSurface);
-    delegate_noop!(Delegate: ignore WlCallback);
-    delegate_noop!(Delegate: ignore XdgWmBase);
-    delegate_noop!(Delegate: ignore WlShm);
-    delegate_noop!(Delegate: ignore WlShmPool);
-    delegate_noop!(Delegate: ignore WlShellSurface);
-    delegate_noop!(Delegate: ignore ZwlrLayerShellV1);
-    delegate_noop!(Delegate: ignore ZwlrScreencopyManagerV1);
-    delegate_noop!(Delegate: ignore WpViewporter);
-    delegate_noop!(Delegate: ignore WpViewport);
-
     let qh = &wayland.qh;
 
     // Globals
@@ -230,36 +213,33 @@ pub(crate) fn screen_shot_overlay(wayland: &mut WaylandVars, screens: Vec<Screen
     let mut pixels_passed = 0;
     for screen in screens {
         let (width, height) = (screen.resolution.0, screen.resolution.1);
+        let (l_width, l_height) = (screen.logical_resolution.0, screen.logical_resolution.1);
 
         let surface = compositor.create_surface(qh, ());
         let viewport = viewporter.get_viewport(&surface, qh, ());
 
-        viewport.set_destination(2560, 1440);
+        viewport.set_destination(l_width, l_height);
         //surface.set_buffer_scale(2);
-        window_data_manager
-            .wayland_window_data
-            .push(WaylandWindowData {
-                buffer: shm_pool.create_buffer(
-                    pixels_passed,
-                    width,
-                    height,
-                    width * 4,
-                    Format::Xrgb8888,
-                    qh,
-                    (),
-                ),
-                surface,
-
-                ressolution: (width, height),
-                offset: pixels_passed,
-                output: screen.wl_output,
-            });
+        window_data_manager.wayland_window_data.push(PopupData {
+            buffer: shm_pool.create_buffer(
+                pixels_passed,
+                width,
+                height,
+                width * 4,
+                Format::Xrgb8888,
+                qh,
+                (),
+            ),
+            surface,
+            _offset: pixels_passed,
+            screen_data: screen,
+        });
 
         let window_data = window_data_manager.wayland_window_data.last_mut().unwrap();
 
         let layer_surface = layer_shell.get_layer_surface(
             &window_data.surface,
-            Some(&window_data.output),
+            Some(&window_data.screen_data.wl_output),
             Layer::Overlay,
             "ScreenshotUtil".to_string(),
             qh,
@@ -267,8 +247,7 @@ pub(crate) fn screen_shot_overlay(wayland: &mut WaylandVars, screens: Vec<Screen
         );
 
         // Configure surface
-        println!("x:{} y:{}", width, height);
-        layer_surface.set_size(2560 as u32, 1440 as u32);
+        layer_surface.set_size(l_width as u32, l_height as u32);
         layer_surface.set_anchor(Anchor::Bottom);
         layer_surface.set_margin(0, 0, 0, 0);
         layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
@@ -292,11 +271,12 @@ pub(crate) fn screen_shot_overlay(wayland: &mut WaylandVars, screens: Vec<Screen
                 .blocking_dispatch(&mut Delegate)
                 .unwrap();
             let val = success.lock().unwrap();
-            if val.is_finished() {
+            if *val == 0 {
                 break;
             };
         }
     }
+
     window_data_manager.atach();
 
     loop {
