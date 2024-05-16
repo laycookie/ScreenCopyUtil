@@ -10,7 +10,6 @@ use wayland_client::{
     globals::{registry_queue_init, GlobalList, GlobalListContents},
     protocol::{
         wl_buffer::WlBuffer,
-        wl_callback::WlCallback,
         wl_compositor::WlCompositor,
         wl_registry::{self, WlRegistry},
         wl_shell_surface::WlShellSurface,
@@ -20,9 +19,8 @@ use wayland_client::{
     },
     Connection, Dispatch, EventQueue, QueueHandle,
 };
-use wayland_protocols::{
-    wp::viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter},
-    xdg::shell::client::xdg_wm_base::XdgWmBase,
+use wayland_protocols::wp::viewporter::client::{
+    wp_viewport::WpViewport, wp_viewporter::WpViewporter,
 };
 use wayland_protocols_wlr::{
     layer_shell::v1::client::{
@@ -246,7 +244,6 @@ pub(crate) fn screen_shot_overlay(wayland: &mut WaylandVars, screens: Vec<Screen
             (),
         );
 
-        // Configure surface
         layer_surface.set_size(l_width as u32, l_height as u32);
         layer_surface.set_anchor(Anchor::Bottom);
         layer_surface.set_margin(0, 0, 0, 0);
