@@ -1,10 +1,20 @@
 use image::ImageFormat;
 use std::{
-    io::Read,
+    io::{Read, Seek, SeekFrom, Write},
+    mem,
     path::{Path, PathBuf},
+    sync::Arc,
+    thread,
+    time::SystemTime,
 };
-use wayland::{create_popup, draw_background, screenshot, types::Delegate, WaylandVarsNew};
+use types::BuffersStore;
+use wayland::{
+    create_popup, screenshot,
+    types::{Delegate, Popup},
+    WaylandVarsNew,
+};
 
+pub mod types;
 pub mod wayland;
 
 mod test;
@@ -41,21 +51,33 @@ fn main() {
 
     // Create and save the screenshot with the screen info
     let screenshots_file = tempfile::tempfile().unwrap();
+    println!("Screenshoting");
     #[cfg(target_os = "linux")]
     let mut screenshots_data = screenshot(&mut wayland_vars, screenshots_file);
 
+    println!("Copying screenshots");
     // Save the screenshot
     let mut screens_buf = Vec::with_capacity(screenshots_data.file_len);
-    screenshots_data.file.read_to_end(&mut screens_buf).unwrap();
+    screenshots_data
+        .buffer_file
+        .read_to_end(&mut screens_buf)
+        .unwrap();
 
+    println!("Creating popups");
     #[cfg(target_os = "linux")]
-    let mut temp = create_popup(&mut wayland_vars, &screenshots_data);
+    let mut popups = create_popup(&mut wayland_vars, &screenshots_data);
 
     // Render overlay
     #[cfg(target_os = "linux")]
     {
-        draw_background(&mut temp, settings.background);
-        temp.render(&wayland_vars.qh);
+        println!("Drawing");
+        draw_background(&mut popups, settings.background);
+        println!("Done");
+        popups.buffers_metadata.iter().for_each(|a| {
+            a.surface.frame(&wayland_vars.qh, ());
+            a.surface.attach(Some(&a.buffer), 0, 0);
+            a.surface.commit();
+        });
         wayland_vars
             .event_queue
             .blocking_dispatch(&mut Delegate)
@@ -66,17 +88,27 @@ fn main() {
     match screenshot_type {
         ScreenshotType::Fullscreen => {
             let mut image_num = 0;
-            screenshots_data
-                .screenshots_data
+            let test = Arc::new(screens_buf.clone());
+
+            let handles = screenshots_data
+                .buffers_metadata
                 .iter()
-                .for_each(|screenshot_data| {
-                    save_image(
-                        screenshot_data.screen_data.resolution,
-                        &screens_buf[screenshot_data.offset..screenshot_data.span],
-                        &settings.path.join(format!("output{}", image_num)),
-                    );
+                .map(|screenshot_data| {
+                    let pixels = test.clone();
+                    let offset = screenshot_data.offset;
+                    let span = screenshot_data.span;
+                    let resolution = screenshot_data.screen_data.resolution;
+                    let path = settings.path.join(format!("output{}", image_num));
                     image_num += 1;
-                });
+                    println!("Saving");
+
+                    thread::spawn(move || save_image(resolution, &pixels[offset..span], &path))
+                })
+                .collect::<Vec<_>>();
+
+            for handle in handles {
+                handle.join().unwrap();
+            }
         }
         ScreenshotType::Window => todo!(),
     }
@@ -98,4 +130,29 @@ fn save_image((width, height): (i32, i32), pixels: &[u8], path: &Path) {
     println!("Compressing");
     img.save_with_format(path, ImageFormat::WebP)
         .expect("Failed to save image");
+    println!("Finished compressing");
+}
+
+pub(crate) fn draw_background(popups_mem: &mut BuffersStore<Popup>, background: [u8; 4]) {
+    for popup in popups_mem.buffers_metadata.iter() {
+        popups_mem
+            .buffer_file
+            .seek(SeekFrom::Start(popup.screen_data.offset as u64))
+            .unwrap();
+
+        let cashed = u32::from_ne_bytes(background);
+        let compressed_buf = vec![cashed; popup.screen_data.span / 4];
+        let uncompressed_buf = unsafe {
+            let len = compressed_buf.len() * 4;
+            let ptr = compressed_buf.as_ptr() as *const u8;
+            mem::forget(compressed_buf);
+
+            Vec::from_raw_parts(ptr as *mut u8, len, len)
+        };
+
+        popups_mem
+            .buffer_file
+            .write_all(&uncompressed_buf[..])
+            .unwrap();
+    }
 }

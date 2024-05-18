@@ -1,6 +1,5 @@
 use std::{
     fs::File,
-    io::{self, Seek, Write},
     os::fd::AsFd,
     sync::{Arc, Mutex},
 };
@@ -39,7 +38,9 @@ use wayland_protocols_wlr::{
     },
 };
 
-use self::types::{Delegate, ScreenData, ScreenshotData, Screenshots};
+use crate::types::{BuffersStore, Screenshot};
+
+use self::types::{Delegate, Popup, ScreenData, Screenshots};
 
 pub mod get_screencopy;
 pub mod init;
@@ -149,7 +150,7 @@ pub(crate) fn init() -> WaylandVarsNew {
 
 // ===
 
-pub(crate) fn screenshot(vars: &mut WaylandVarsNew, file: File) -> Screenshots {
+pub(crate) fn screenshot(vars: &mut WaylandVarsNew, file: File) -> BuffersStore<Screenshot> {
     let screensdata = get_screen_data(vars);
     let (qh, screencopying_counter) = (&vars.qh, Arc::new(Mutex::new(0)));
 
@@ -164,7 +165,6 @@ pub(crate) fn screenshot(vars: &mut WaylandVarsNew, file: File) -> Screenshots {
         .map(|screen_data| screen_data.resolution.0 * screen_data.resolution.1)
         .sum::<i32>();
 
-    //let mut file = tempfile::tempfile().unwrap();
     file.set_len((pixel_count * format_bytes) as u64).unwrap();
 
     let shm_pool = shm.create_pool(file.as_fd(), pixel_count * format_bytes, qh, ());
@@ -172,14 +172,28 @@ pub(crate) fn screenshot(vars: &mut WaylandVarsNew, file: File) -> Screenshots {
     let (mut screenshots, mut pixels_passed) = (vec![], 0usize);
     for screen in screensdata {
         let (width, height) = (screen.resolution.0, screen.resolution.1);
-        // let (l_width, l_height) = (screen.logical_resolution.0, screen.logical_resolution.1);
         let screen_byte_span = pixels_passed + (width * height * format_bytes) as usize;
 
-        let screen_data =
-            ScreenshotData::new(qh, screen, &shm_pool, pixels_passed, screen_byte_span);
+        let buffer = shm_pool.create_buffer(
+            pixels_passed as i32,
+            width,
+            height,
+            width * format_bytes,
+            Format::Xrgb8888,
+            qh,
+            (),
+        );
 
-        screen_data.screencopy(&screencopying_counter, qh, &screencopy_manager);
-        screenshots.push(screen_data);
+        *screencopying_counter.lock().unwrap() += 1;
+        let frame =
+            screencopy_manager.capture_output(0, &screen.output, qh, screencopying_counter.clone());
+        frame.copy(&buffer);
+
+        screenshots.push(Screenshot {
+            screen_data: screen,
+            offset: pixels_passed,
+            span: screen_byte_span,
+        });
 
         vars.event_queue.blocking_dispatch(&mut Delegate).unwrap();
         pixels_passed += screen_byte_span;
@@ -194,10 +208,10 @@ pub(crate) fn screenshot(vars: &mut WaylandVarsNew, file: File) -> Screenshots {
         };
     }
 
-    Screenshots {
-        file,
+    BuffersStore {
+        buffer_file: file,
         file_len: pixels_passed,
-        screenshots_data: screenshots,
+        buffers_metadata: screenshots,
     }
 }
 
@@ -232,8 +246,8 @@ fn get_screen_data(vars: &mut WaylandVarsNew) -> Vec<ScreenData> {
 }
 pub(crate) fn create_popup(
     vars: &mut WaylandVarsNew,
-    screenshots_data: &Screenshots,
-) -> Screenshots {
+    screenshots_data: &BuffersStore<Screenshot>,
+) -> BuffersStore<Popup> {
     let qh = &vars.qh;
 
     let compositor: WlCompositor = vars.globals.bind(qh, 1..=4, ()).unwrap();
@@ -255,7 +269,7 @@ pub(crate) fn create_popup(
 
     // ===
     let mut screens = vec![];
-    for screen in screenshots_data.screenshots_data.iter() {
+    for screen in screenshots_data.buffers_metadata.iter() {
         let (l_width, l_height) = (
             screen.screen_data.logical_resolution.0,
             screen.screen_data.logical_resolution.1,
@@ -297,28 +311,16 @@ pub(crate) fn create_popup(
         // change to new buffer
 
         let mut screen_clone = screen.clone();
-        screen_clone.attach_surface(surface);
-        screen_clone.attach_buffer(buffer);
-        screens.push(screen_clone);
+        screens.push(Popup {
+            screen_data: screen.clone(),
+            buffer,
+            surface,
+        });
     }
 
-    Screenshots {
-        file: backing_memory,
+    BuffersStore {
+        buffer_file: backing_memory,
         file_len: screenshots_data.file_len,
-        screenshots_data: screens,
-    }
-}
-
-pub(crate) fn draw_background(popups_mem: &mut Screenshots, background: [u8; 4]) {
-    for popup in popups_mem.screenshots_data.iter() {
-        popups_mem
-            .file
-            .seek(io::SeekFrom::Start(popup.offset as u64))
-            .unwrap();
-
-        let buf = (0..popup.span)
-            .map(|i| background[i % background.len()])
-            .collect::<Vec<u8>>();
-        popups_mem.file.write_all(&buf).unwrap();
+        buffers_metadata: screens,
     }
 }

@@ -12,6 +12,8 @@ use wayland_client::{
 };
 use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
 
+use crate::types::Screenshot;
+
 pub(crate) struct Delegate;
 
 #[derive(Debug, Clone)]
@@ -21,7 +23,12 @@ pub(crate) struct ScreenData {
     pub(crate) output: WlOutput,
 }
 
-#[derive(Debug, Clone)]
+pub(crate) struct Popup {
+    pub(crate) screen_data: Screenshot,
+    pub(crate) buffer: WlBuffer,
+    pub(crate) surface: WlSurface,
+}
+
 pub(crate) struct ScreenshotData {
     pub(crate) screen_data: ScreenData,
     buffer: WlBuffer,
