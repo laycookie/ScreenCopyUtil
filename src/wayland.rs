@@ -13,7 +13,10 @@ use wayland_client::{
         wl_callback::WlCallback,
         wl_compositor::WlCompositor,
         wl_output::{self, WlOutput},
+        wl_pointer::{self, WlPointer},
+        wl_region::WlRegion,
         wl_registry::{self, WlRegistry},
+        wl_seat::WlSeat,
         wl_shm::{Format, WlShm},
         wl_shm_pool::WlShmPool,
         wl_surface::WlSurface,
@@ -40,13 +43,14 @@ use wayland_protocols_wlr::{
 
 use crate::types::{BuffersStore, Screenshot};
 
-use self::types::{Delegate, Popup, ScreenData, Screenshots};
+use self::types::{Delegate, Popup, ScreenData, ScreenshotWayland};
 
 pub mod get_screencopy;
 pub mod init;
 pub mod types;
 
 delegate_noop!(Delegate: ignore WlShm);
+delegate_noop!(Delegate: ignore WlRegion);
 delegate_noop!(Delegate: ignore WlShmPool);
 delegate_noop!(Delegate: ignore WlBuffer);
 delegate_noop!(Delegate: ignore WlCompositor);
@@ -57,6 +61,7 @@ delegate_noop!(Delegate: ignore WpViewport);
 delegate_noop!(Delegate: ignore ZwlrScreencopyManagerV1);
 delegate_noop!(Delegate: ignore ZxdgOutputManagerV1);
 delegate_noop!(Delegate: ignore ZwlrLayerShellV1);
+delegate_noop!(Delegate: ignore WlSeat);
 
 impl Dispatch<WlRegistry, GlobalListContents> for Delegate {
     fn event(
@@ -67,6 +72,22 @@ impl Dispatch<WlRegistry, GlobalListContents> for Delegate {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+    }
+}
+impl Dispatch<WlPointer, Arc<Mutex<Option<WlSurface>>>> for Delegate {
+    fn event(
+        _: &mut Self,
+        _: &WlPointer,
+        event: wl_pointer::Event,
+        store_surface: &Arc<Mutex<Option<WlSurface>>>,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_pointer::Event::Enter { surface, .. } = event {
+            let mut hovering_over_surface = store_surface.lock().unwrap();
+            *hovering_over_surface = Some(surface);
+            // println!("{:#?}", surface);
+        }
     }
 }
 
@@ -152,6 +173,7 @@ pub(crate) fn init() -> WaylandVarsNew {
 
 pub(crate) fn screenshot(vars: &mut WaylandVarsNew, file: File) -> BuffersStore<Screenshot> {
     let screensdata = get_screen_data(vars);
+
     let (qh, screencopying_counter) = (&vars.qh, Arc::new(Mutex::new(0)));
 
     // Globals
@@ -162,40 +184,28 @@ pub(crate) fn screenshot(vars: &mut WaylandVarsNew, file: File) -> BuffersStore<
     let format_bytes = 4;
     let pixel_count = screensdata
         .iter()
-        .map(|screen_data| screen_data.resolution.0 * screen_data.resolution.1)
+        .map(|(screen_data, _)| screen_data.resolution.0 * screen_data.resolution.1)
         .sum::<i32>();
-
+    let shm_pool = shm.create_pool(file.as_fd(), pixel_count * format_bytes, qh, ());
     file.set_len((pixel_count * format_bytes) as u64).unwrap();
 
-    let shm_pool = shm.create_pool(file.as_fd(), pixel_count * format_bytes, qh, ());
-
     let (mut screenshots, mut pixels_passed) = (vec![], 0usize);
-    for screen in screensdata {
+    for (screen, output) in screensdata {
         let (width, height) = (screen.resolution.0, screen.resolution.1);
+        let (l_width, l_height) = (screen.logical_resolution.0, screen.logical_resolution.1);
         let screen_byte_span = pixels_passed + (width * height * format_bytes) as usize;
 
-        let buffer = shm_pool.create_buffer(
-            pixels_passed as i32,
-            width,
-            height,
-            width * format_bytes,
-            Format::Xrgb8888,
-            qh,
-            (),
-        );
-
-        *screencopying_counter.lock().unwrap() += 1;
-        let frame =
-            screencopy_manager.capture_output(0, &screen.output, qh, screencopying_counter.clone());
-        frame.copy(&buffer);
-
         screenshots.push(Screenshot {
-            screen_data: screen,
             offset: pixels_passed,
             span: screen_byte_span,
+            wayland_data: ScreenshotWayland::new(qh, screen, output, &shm_pool, pixels_passed),
+            screen_data: ScreenData {
+                logical_resolution: (l_width, l_height),
+                resolution: (width, height),
+            },
         });
 
-        vars.event_queue.blocking_dispatch(&mut Delegate).unwrap();
+        // vars.event_queue.blocking_dispatch(&mut Delegate).unwrap();
         pixels_passed += screen_byte_span;
     }
 
@@ -215,12 +225,12 @@ pub(crate) fn screenshot(vars: &mut WaylandVarsNew, file: File) -> BuffersStore<
     }
 }
 
-fn get_screen_data(vars: &mut WaylandVarsNew) -> Vec<ScreenData> {
+fn get_screen_data(vars: &mut WaylandVarsNew) -> Vec<(ScreenData, WlOutput)> {
     let (globals, event_queue, qh) = (&vars.globals, &mut vars.event_queue, &vars.qh);
 
     let output_manager: ZxdgOutputManagerV1 = globals.bind(qh, 1..=3, ()).unwrap();
 
-    let mut screens_data: Vec<ScreenData> = vec![];
+    let mut screens_data = vec![];
     for global in globals.contents().clone_list() {
         if let "wl_output" = &global.interface[..] {
             let resolution = Arc::new(Mutex::new(None));
@@ -234,11 +244,16 @@ fn get_screen_data(vars: &mut WaylandVarsNew) -> Vec<ScreenData> {
 
             event_queue.blocking_dispatch(&mut Delegate).unwrap();
 
-            screens_data.push(ScreenData {
-                resolution: resolution.lock().unwrap().expect("res not found"),
-                logical_resolution: logical_resolution.lock().unwrap().expect("l_res not found"),
+            screens_data.push((
+                ScreenData {
+                    resolution: resolution.lock().unwrap().expect("res not found"),
+                    logical_resolution: logical_resolution
+                        .lock()
+                        .unwrap()
+                        .expect("l_res not found"),
+                },
                 output,
-            });
+            ));
         }
     }
 
@@ -250,10 +265,10 @@ pub(crate) fn create_popup(
 ) -> BuffersStore<Popup> {
     let qh = &vars.qh;
 
-    let compositor: WlCompositor = vars.globals.bind(qh, 1..=4, ()).unwrap();
-    let viewporter: WpViewporter = vars.globals.bind(qh, 1..=1, ()).unwrap();
-    let layer_shell: ZwlrLayerShellV1 = vars.globals.bind(qh, 1..=1, ()).unwrap();
     let shm: WlShm = vars.globals.bind(qh, 1..=1, ()).unwrap();
+    let compositor: WlCompositor = vars.globals.bind(qh, 1..=4, ()).unwrap();
+    let layer_shell: ZwlrLayerShellV1 = vars.globals.bind(qh, 1..=1, ()).unwrap();
+    let viewporter: WpViewporter = vars.globals.bind(qh, 1..=1, ()).unwrap();
 
     let backing_memory = tempfile().unwrap();
     backing_memory
@@ -292,7 +307,7 @@ pub(crate) fn create_popup(
         let surface = compositor.create_surface(qh, ());
         let layer_surface = layer_shell.get_layer_surface(
             &surface,
-            Some(&screen.screen_data.output),
+            Some(&screen.wayland_data.output),
             Layer::Overlay,
             "ScreenshotUtil".to_string(),
             qh,
@@ -300,17 +315,20 @@ pub(crate) fn create_popup(
         );
         let viewport = viewporter.get_viewport(&surface, qh, ());
         viewport.set_destination(l_width, l_height);
+        let region = compositor.create_region(qh, ());
+        //region.add(0, 0, 0, 0);
+        //surface.set_input_region(Some(&region));
 
         layer_surface.set_size(l_width as u32, l_height as u32);
         layer_surface.set_anchor(Anchor::Bottom);
         layer_surface.set_margin(0, 0, 0, 0);
         layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer_surface.set_exclusive_zone(-1);
         surface.commit();
 
         vars.event_queue.blocking_dispatch(&mut Delegate).unwrap();
         // change to new buffer
 
-        let mut screen_clone = screen.clone();
         screens.push(Popup {
             screen_data: screen.clone(),
             buffer,
