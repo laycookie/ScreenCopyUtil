@@ -8,14 +8,11 @@ use std::{
 };
 use types::BuffersStore;
 use wayland::{
-    create_popup, screenshot,
+    create_popup, filter_unfocused_popups, screenshot,
     types::{Delegate, Popup},
     WaylandVarsNew,
 };
-use wayland_client::protocol::wl_seat::WlSeat;
 use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
-
-use crate::types::Screenshot;
 
 pub mod types;
 pub mod wayland;
@@ -57,77 +54,29 @@ fn main() {
 
     // Create and save the screenshot with the screen info
     let screenshots_file = tempfile::tempfile().unwrap();
-    println!("Screenshoting");
-    #[cfg(target_os = "linux")]
-    let mut screenshots_data = match screenshot_type {
-        ScreenshotType::Fullscreen { .. } => screenshot(&mut wayland_vars, screenshots_file),
-        ScreenshotType::Window => screenshot(&mut wayland_vars, screenshots_file),
-    };
+    let mut screenshots_data = screenshot(&mut wayland_vars, screenshots_file);
 
     println!("Creating popups");
-    #[cfg(target_os = "linux")]
     let mut popups = create_popup(&mut wayland_vars, &screenshots_data);
 
-    // Render overlay
+    if matches!(screenshot_type, ScreenshotType::Fullscreen { single_monitor } if single_monitor) {
+        filter_unfocused_popups(&mut popups, &mut wayland_vars);
+    }
+
     #[cfg(target_os = "linux")]
     {
-        popups.buffers_metadata.iter().for_each(|a| {
-            a.surface.attach(Some(&a.buffer), 0, 0);
-            a.surface.commit();
-        });
-        wayland_vars
-            .event_queue
-            .blocking_dispatch(&mut Delegate)
-            .unwrap();
-
-        // Remove all the popups that dont have the cursor on them
-
-        if matches!(
-            screenshot_type,
-            ScreenshotType::Fullscreen { single_monitor } if single_monitor
-        ) {
-            let qh = &wayland_vars.qh;
-
-            let mut seat: Option<WlSeat> = None;
-            for global in wayland_vars.globals.contents().clone_list() {
-                if "wl_seat" == &global.interface[..] {
-                    seat = Some(wayland_vars.globals.registry().bind(
-                        global.name,
-                        global.version,
-                        qh,
-                        (),
-                    ));
-                };
-            }
-            wayland_vars.event_queue.roundtrip(&mut Delegate).unwrap();
-
-            let hovering_over_surface = Arc::new(Mutex::new(None));
-            seat.expect("WlSeat was not found")
-                .get_pointer(qh, hovering_over_surface.clone());
-
-            wayland_vars
-                .event_queue
-                .blocking_dispatch(&mut Delegate)
-                .unwrap();
-
-            let hovering_over_surface = hovering_over_surface.lock().unwrap();
-            let hovering_over_surface = hovering_over_surface.clone().unwrap();
-
-            popups.buffers_metadata.retain(|e| {
-                if e.surface != hovering_over_surface {
-                    e.surface.attach(None, 0, 0);
-                    e.surface.commit();
-                    false
-                } else {
-                    true
+        // Draw
+        match screenshot_type {
+            ScreenshotType::Fullscreen { single_monitor } => {
+                if single_monitor {
+                    filter_unfocused_popups(&mut popups, &mut wayland_vars);
                 }
-            });
+                draw_background(&mut popups, settings.background);
+            }
+            ScreenshotType::Window => todo!(),
         }
-
-        draw_background(&mut popups, settings.background);
+        // Show the popup
         popups.buffers_metadata.iter().for_each(|a| {
-            let (width, height) = a.screen_data.screen_data.resolution;
-            a.surface.damage_buffer(0, 0, width, height);
             a.surface.attach(Some(&a.buffer), 0, 0);
             a.surface.commit();
         });
@@ -136,7 +85,6 @@ fn main() {
             .blocking_dispatch(&mut Delegate)
             .unwrap();
     }
-
     #[cfg(target_os = "linux")]
     {
         let qh = &wayland_vars.qh;
@@ -158,8 +106,7 @@ fn main() {
                 .blocking_dispatch(&mut Delegate)
                 .unwrap();
 
-            let val = screencopying_counter.lock().unwrap();
-            if *val == 0 {
+            if *screencopying_counter.lock().unwrap() == 0 {
                 break;
             }
         }
@@ -190,7 +137,7 @@ fn main() {
                     let offset = screenshot_data.offset;
                     let span = screenshot_data.span;
                     let resolution = screenshot_data.screen_data.resolution;
-                    let path = settings.path.join(format!("output{}", image_num));
+                    let path = settings.path.join(format!("output{}.webp", image_num));
                     image_num += 1;
                     println!("Saving");
 

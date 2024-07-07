@@ -83,10 +83,12 @@ impl Dispatch<WlPointer, Arc<Mutex<Option<WlSurface>>>> for Delegate {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        if let wl_pointer::Event::Enter { .. } = event {
+            println!("{:#?}", event);
+        }
         if let wl_pointer::Event::Enter { surface, .. } = event {
             let mut hovering_over_surface = store_surface.lock().unwrap();
             *hovering_over_surface = Some(surface);
-            // println!("{:#?}", surface);
         }
     }
 }
@@ -145,6 +147,7 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for Delegate {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        println!("{:#?}", event);
         if let zwlr_layer_surface_v1::Event::Configure { serial, .. } = event {
             layer_surface.ack_configure(serial);
         }
@@ -178,8 +181,6 @@ pub(crate) fn screenshot(vars: &mut WaylandVarsNew, file: File) -> BuffersStore<
 
     // Globals
     let shm: WlShm = vars.globals.bind(qh, 1..=1, ()).unwrap();
-    let screencopy_manager: ZwlrScreencopyManagerV1 = vars.globals.bind(qh, 1..=1, ()).unwrap();
-
     // Logic
     let format_bytes = 4;
     let pixel_count = screensdata
@@ -205,7 +206,6 @@ pub(crate) fn screenshot(vars: &mut WaylandVarsNew, file: File) -> BuffersStore<
             },
         });
 
-        // vars.event_queue.blocking_dispatch(&mut Delegate).unwrap();
         pixels_passed += screen_byte_span;
     }
 
@@ -315,25 +315,20 @@ pub(crate) fn create_popup(
         );
         let viewport = viewporter.get_viewport(&surface, qh, ());
         viewport.set_destination(l_width, l_height);
-        let region = compositor.create_region(qh, ());
+        // let region = compositor.create_region(qh, ());
         //region.add(0, 0, 0, 0);
         //surface.set_input_region(Some(&region));
 
-        layer_surface.set_size(l_width as u32, l_height as u32);
-        layer_surface.set_anchor(Anchor::Bottom);
-        layer_surface.set_margin(0, 0, 0, 0);
-        layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
-        layer_surface.set_exclusive_zone(-1);
-        surface.commit();
-
-        vars.event_queue.blocking_dispatch(&mut Delegate).unwrap();
-        // change to new buffer
-
-        screens.push(Popup {
+        let popup = Popup {
             screen_data: screen.clone(),
             buffer,
             surface,
-        });
+            layer_surface,
+        };
+        popup.config_layer_surface(&mut vars.event_queue);
+        vars.event_queue.blocking_dispatch(&mut Delegate).unwrap();
+
+        screens.push(popup);
     }
 
     BuffersStore {
@@ -341,4 +336,43 @@ pub(crate) fn create_popup(
         file_len: screenshots_data.file_len,
         buffers_metadata: screens,
     }
+}
+
+pub(crate) fn filter_unfocused_popups(popups: &mut BuffersStore<Popup>, vars: &mut WaylandVarsNew) {
+    // render overlay
+    popups.buffers_metadata.iter().for_each(|a| {
+        a.surface.attach(Some(&a.buffer), 0, 0);
+        a.surface.commit();
+    });
+
+    // Get the seat with the cursor
+    let hovering_over_surface = Arc::new(Mutex::new(None));
+    for global in vars.globals.contents().clone_list() {
+        if "wl_seat" == &global.interface[..] {
+            let seat: WlSeat =
+                vars.globals
+                    .registry()
+                    .bind(global.name, global.version, &vars.qh, ());
+
+            // TODO: Add suport for multiple seats
+            seat.get_pointer(&vars.qh, hovering_over_surface.clone());
+        };
+    }
+    loop {
+        vars.event_queue.blocking_dispatch(&mut Delegate).unwrap();
+        if (*hovering_over_surface.lock().unwrap()).is_some() {
+            break;
+        }
+    }
+    // Remove all the popups that dont have the cursor on them
+    let hovering_over_surface = hovering_over_surface.lock().unwrap().clone().unwrap();
+    popups.buffers_metadata.retain(|e| {
+        e.surface.attach(None, 0, 0);
+        e.surface.commit();
+
+        e.config_layer_surface(&mut vars.event_queue);
+        vars.event_queue.blocking_dispatch(&mut Delegate).unwrap();
+
+        e.surface == hovering_over_surface
+    });
 }

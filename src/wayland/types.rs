@@ -8,9 +8,14 @@ use wayland_client::{
         wl_buffer::WlBuffer, wl_output::WlOutput, wl_shm::Format, wl_shm_pool::WlShmPool,
         wl_surface::WlSurface,
     },
-    QueueHandle,
+    EventQueue, QueueHandle,
 };
-use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
+use wayland_protocols_wlr::{
+    layer_shell::v1::client::zwlr_layer_surface_v1::{
+        Anchor, KeyboardInteractivity, ZwlrLayerSurfaceV1,
+    },
+    screencopy::v1::client::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
+};
 
 use crate::types::Screenshot;
 
@@ -27,6 +32,24 @@ pub(crate) struct Popup {
     pub(crate) screen_data: Screenshot,
     pub(crate) buffer: WlBuffer,
     pub(crate) surface: WlSurface,
+    pub(crate) layer_surface: ZwlrLayerSurfaceV1,
+}
+
+impl Popup {
+    pub(crate) fn config_layer_surface(&self, event_queue: &mut EventQueue<Delegate>) {
+        let (l_width, l_height) = self.screen_data.screen_data.logical_resolution;
+
+        self.layer_surface.set_size(l_width as u32, l_height as u32);
+        self.layer_surface.set_anchor(Anchor::Bottom);
+        self.layer_surface.set_margin(0, 0, 0, 0);
+        self.layer_surface
+            .set_keyboard_interactivity(KeyboardInteractivity::None);
+        self.layer_surface.set_exclusive_zone(-1);
+        self.surface.commit();
+
+        println!("prep for config");
+        event_queue.dispatch_pending(&mut Delegate).unwrap();
+    }
 }
 
 #[derive(Debug, Clone)]
